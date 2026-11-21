@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hisaab — Shop Ledger</title>
+    <link rel="stylesheet" href="styles.css?v=2" />
+  </head>
+  <body>
+    <main class="app">
+      <div class="top-utility-row">
+        <span class="shop-subtitle" data-i18n="subtitle">Shop Ledger</span>
+        <label for="lang-select" class="sr-only">Language</label>
+        <select id="lang-select" class="lang-select" aria-label="Language">
+          <option value="en">English</option>
+          <option value="hi">हिन्दी</option>
+          <option value="te">తెలుగు</option>
+        </select>
+      </div>
+
+      <div id="storage-alert" class="banner banner-warn" role="alert" hidden></div>
+
+      <!-- Home Screen -->
+      <section id="home-view" class="view">
+        <header class="app-header">
+          <div class="brand-row">
+            <h1 id="shop-title" class="shop-title">Hisaab</h1>
+          </div>
+          <div class="total-card">
+            <span class="total-label" data-i18n="totalOutstanding">Total Outstanding</span>
+            <div id="total-outstanding" class="total-amount">Rs 0</div>
+          </div>
+        </header>
+
+        <section class="card" aria-labelledby="add-customer-heading">
+          <h2 id="add-customer-heading" class="section-title" data-i18n="addCustomerHeading">
+            Add Customer
+          </h2>
+          <form id="add-customer-form" class="stack" novalidate>
+            <div class="field">
+              <label for="customer-name" data-i18n="customerNameLabel">Customer name</label>
+              <input
+                id="customer-name"
+                name="name"
+                type="text"
+                autocomplete="name"
+                placeholder="e.g. Ravi Kumar"
+                required
+              />
+            </div>
+            <div class="field">
+              <label for="customer-phone" data-i18n="customerPhoneLabel">Phone (10 digits)</label>
+              <input
+                id="customer-phone"
+                name="phone"
+                type="tel"
+                inputmode="numeric"
+                maxlength="10"
+                autocomplete="tel"
+                placeholder="e.g. 9000000101"
+                required
+              />
+            </div>
+            <p id="customer-error" class="form-error" role="alert" hidden></p>
+            <button type="submit" class="btn btn-primary" data-i18n="addCustomerBtn">
+              Add Customer
+            </button>
+          </form>
+        </section>
+
+        <section class="card" aria-labelledby="customers-heading">
+          <div class="section-header">
+            <h2 id="customers-heading" class="section-title" data-i18n="customersHeading">
+              Customers
+            </h2>
+            <span id="customer-count" class="count-pill">0</span>
+          </div>
+          <div class="view-tabs" role="tablist" aria-label="Customer view">
+            <button
+              type="button"
+              id="tab-all"
+              class="tab-btn is-active"
+              role="tab"
+              aria-selected="true"
+              data-i18n="tabAll"
+            >
+              All
+            </button>
+            <button
+              type="button"
+              id="tab-overdue"
+              class="tab-btn"
+              role="tab"
+              aria-selected="false"
+              data-i18n="tabOverdue"
+            >
+              Overdue
+            </button>
+          </div>
+          <div class="field">
+            <label for="customer-search" class="sr-only">Search customers by name or phone</label>
+            <input
+              id="customer-search"
+              type="search"
+              placeholder="Search by name or phone..."
+              autocomplete="off"
+            />
+          </div>
+          <p id="customers-empty" class="empty-state">
+            No customers yet. Add your first customer above.
+          </p>
+          <ul id="customer-list" class="customer-list"></ul>
+        </section>
+
+        <section class="card" aria-labelledby="import-heading">
+          <h2 id="import-heading" class="section-title" data-i18n="importHeading">
+            Import &amp; Backup
+          </h2>
+          <div class="stack">
+            <div class="field">
+              <label for="import-box" data-i18n="importLabel">
+                Paste shop JSON (replaces current data)
+              </label>
+              <textarea
+                id="import-box"
+                rows="4"
+                placeholder='{"shop":"...","customers":[...],"entries":[...]}'
+              ></textarea>
+            </div>
+            <p id="import-error" class="form-error" role="alert" hidden></p>
+            <p id="import-status" class="form-status" role="status" hidden></p>
+            <div class="btn-row">
+              <button type="button" id="import-go" class="btn btn-ghost" data-i18n="importBtn">
+                Import JSON
+              </button>
+              <button
+                type="button"
+                id="export-csv-btn"
+                class="btn btn-ghost"
+                data-i18n="exportCsvBtn"
+              >
+                Export CSV
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section class="card" aria-labelledby="upi-heading">
+          <h2 id="upi-heading" class="section-title" data-i18n="upiHeading">
+            UPI Payment Link
+          </h2>
+          <form id="upi-form" class="stack" novalidate>
+            <div class="field">
+              <label for="upi-id-input" data-i18n="upiLabel">
+                Shop UPI ID (added to WhatsApp reminders)
+              </label>
+              <input
+                id="upi-id-input"
+                name="upiId"
+                type="text"
+                placeholder="e.g. lakshmistore@upi"
+                autocomplete="off"
+              />
+            </div>
+            <p id="upi-error" class="form-error" role="alert" hidden></p>
+            <p id="upi-status" class="form-status" role="status" hidden></p>
+            <button type="submit" id="upi-save-btn" class="btn btn-ghost" data-i18n="upiSaveBtn">
+              Save UPI ID
+            </button>
+          </form>
+        </section>
+      </section>
+
+      <!-- Customer Detail Screen -->
+      <section id="customer-view" class="view" hidden>
+        <header class="detail-header">
+          <button
+            type="button"
+            id="back-btn"
+            class="btn btn-ghost back-btn"
+            data-i18n="backBtn"
+          >
+            &larr; Back
+          </button>
+          <div class="detail-identity">
+            <h1 id="detail-name" class="detail-name"></h1>
+            <p id="detail-phone" class="detail-phone"></p>
+          </div>
+          <div class="detail-balance-card">
+            <span class="total-label" data-i18n="currentBalance">Current Balance</span>
+            <div id="detail-balance" class="detail-balance-amount">Rs 0</div>
+          </div>
+          <a
+            id="detail-upi-link"
+            data-upi-link
+            class="btn btn-ghost"
+            data-i18n="payViaUpi"
+            hidden
+          >
+            Pay via UPI
+          </a>
+        </header>
+
+        <section class="card" aria-labelledby="add-entry-heading">
+          <h2 id="add-entry-heading" class="section-title" data-i18n="addEntryHeading">
+            Add Entry
+          </h2>
+          <form id="add-entry-form" class="stack" novalidate>
+            <fieldset class="type-toggle">
+              <legend class="sr-only">Entry type</legend>
+              <label class="type-option">
+                <input type="radio" name="type" value="credit" checked />
+                <span class="type-pill type-pill-credit" data-i18n="creditOption">
+                  Credit (Gave goods)
+                </span>
+              </label>
+              <label class="type-option">
+                <input type="radio" name="type" value="payment" />
+                <span class="type-pill type-pill-payment" data-i18n="paymentOption">
+                  Payment (Received)
+                </span>
+              </label>
+            </fieldset>
+
+            <div class="field-row">
+              <div class="field">
+                <label for="entry-amount" data-i18n="amountLabel">Amount (Rs)</label>
+                <input
+                  id="entry-amount"
+                  name="amount"
+                  type="text"
+                  inputmode="numeric"
+                  placeholder="e.g. 250"
+                  required
+                />
+              </div>
+              <div class="field">
+                <label for="entry-date" data-i18n="dateLabel">Date</label>
+                <input id="entry-date" name="date" type="date" required />
+              </div>
+            </div>
+
+            <div class="field">
+              <label for="entry-note" data-i18n="noteLabel">Note (optional)</label>
+              <input
+                id="entry-note"
+                name="note"
+                type="text"
+                placeholder="e.g. groceries, paid on UPI"
+              />
+            </div>
+
+            <div id="shot-field" class="field" hidden>
+              <label for="shot-input" data-i18n="shotLabel">
+                Payment screenshot (optional)
+              </label>
+              <input id="shot-input" name="shot" type="file" accept="image/*" />
+            </div>
+
+            <p id="entry-error" class="form-error" role="alert" hidden></p>
+            <p id="entry-status" class="form-status" role="status" hidden></p>
+            <button type="submit" id="entry-submit-btn" class="btn btn-primary">
+              Save Credit
+            </button>
+          </form>
+        </section>
+
+        <section class="card" aria-labelledby="entries-heading">
+          <div class="section-header">
+            <h2 id="entries-heading" class="section-title" data-i18n="entriesHeading">
+              Entries
+            </h2>
+            <span id="entry-count" class="count-pill">0</span>
+          </div>
+          <p id="entries-empty" class="empty-state" data-i18n="emptyEntries">
+            No entries yet. Add a credit or payment above.
+          </p>
+          <ul id="entry-list" class="entry-list"></ul>
+        </section>
+      </section>
+    </main>
+
+    <script type="module" src="app.js?v=2"></script>
+  </body>
+</html>
