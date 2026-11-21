@@ -280,6 +280,47 @@ export function getCustomerEntries(entries, phone) {
     .map(({ entry }) => entry);
 }
 
+function normalizeImportPhone(rawPhone) {
+  let str;
+  if (typeof rawPhone === 'number') {
+    if (!Number.isFinite(rawPhone) || !Number.isInteger(rawPhone)) return '';
+    str = String(rawPhone);
+  } else if (typeof rawPhone === 'string') {
+    str = rawPhone;
+  } else {
+    return '';
+  }
+
+  let cleaned = str.replace(/[\s\-()[\].]/g, '');
+  if (cleaned.startsWith('+91') && /^\d{10}$/.test(cleaned.slice(3))) {
+    cleaned = cleaned.slice(3);
+  } else if (cleaned.startsWith('91') && cleaned.length === 12 && /^\d{12}$/.test(cleaned)) {
+    cleaned = cleaned.slice(2);
+  } else if (cleaned.startsWith('0') && cleaned.length === 11 && /^\d{11}$/.test(cleaned)) {
+    cleaned = cleaned.slice(1);
+  }
+  return cleaned;
+}
+
+function normalizeImportType(rawType) {
+  return typeof rawType === 'string' ? rawType.trim().toLowerCase() : rawType;
+}
+
+function normalizeImportAmount(rawAmount) {
+  if (typeof rawAmount === 'string') {
+    const trimmed = rawAmount.trim();
+    if (/^\d+\.0{1,2}$/.test(trimmed)) {
+      return trimmed.split('.')[0];
+    }
+    return trimmed;
+  }
+  return rawAmount;
+}
+
+function normalizeImportDate(rawDate) {
+  return typeof rawDate === 'string' ? rawDate.trim() : rawDate;
+}
+
 export function importLedger(rawInput) {
   let parsed = rawInput;
   if (typeof rawInput === 'string') {
@@ -313,7 +354,11 @@ export function importLedger(rawInput) {
   let skippedCustomers = 0;
 
   for (const rawCustomer of parsed.customers) {
-    const check = validateCustomer(rawCustomer, customers);
+    const normalizedCustomer =
+      rawCustomer && typeof rawCustomer === 'object'
+        ? { ...rawCustomer, phone: normalizeImportPhone(rawCustomer.phone) }
+        : rawCustomer;
+    const check = validateCustomer(normalizedCustomer, customers);
     if (check.ok) {
       customers.push(check.customer);
     } else {
@@ -333,13 +378,21 @@ export function importLedger(rawInput) {
       continue;
     }
 
-    const phoneCheck = validatePhone(rawEntry.phone);
+    const normalizedEntry = {
+      ...rawEntry,
+      phone: normalizeImportPhone(rawEntry.phone),
+      type: normalizeImportType(rawEntry.type),
+      amount: normalizeImportAmount(rawEntry.amount),
+      date: normalizeImportDate(rawEntry.date),
+    };
+
+    const phoneCheck = validatePhone(normalizedEntry.phone);
     if (!phoneCheck.ok || !knownPhones.has(phoneCheck.phone)) {
       skippedUnknownPhone += 1;
       continue;
     }
 
-    const entryCheck = validateEntry(rawEntry, customers, generateEntryId(entries));
+    const entryCheck = validateEntry(normalizedEntry, customers, generateEntryId(entries));
     if (!entryCheck.ok) {
       skippedInvalidEntries += 1;
       continue;

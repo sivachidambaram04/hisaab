@@ -632,3 +632,97 @@ describe('Screenshot OCR amount picking (pickAmount)', () => {
     }
   });
 });
+
+describe('Import hardening: phone, type, amount, and date normalisation', () => {
+  it('loads phone given as a JSON number and attaches its entries', () => {
+    const raw = JSON.stringify({
+      shop: 'Number Phone Store',
+      customers: [{ name: 'Asha', phone: 9000000001 }],
+      entries: [
+        { phone: 9000000001, type: 'credit', amount: 300, date: '2026-11-10', note: 'dal' },
+      ],
+    });
+    const res = importLedger(raw);
+    assert.equal(res.ok, true);
+    assert.equal(res.counts.customersLoaded, 1);
+    assert.equal(res.counts.entriesLoaded, 1);
+    assert.equal(res.state.customers[0].phone, '9000000001');
+    assert.equal(getCustomerBalance(res.state.entries, '9000000001'), 300);
+  });
+
+  it('normalises +91, 91, leading 0, spaces, dashes, brackets, and dots on customers and entries', () => {
+    const formats = [
+      '+91 90000 00001',
+      '919000000001',
+      '090000 00001',
+      '9000-000-001',
+      '(900) 000.0001',
+    ];
+
+    for (const customerPhone of formats) {
+      const res = importLedger({
+        shop: 'Format Shop',
+        customers: [{ name: 'Asha', phone: customerPhone }],
+        entries: formats.map((entryPhone, idx) => ({
+          phone: entryPhone,
+          type: 'credit',
+          amount: 100,
+          date: ` 2026-11-0${idx + 1} `,
+          note: 'item',
+        })),
+      });
+      assert.equal(res.ok, true);
+      assert.equal(res.counts.customersLoaded, 1);
+      assert.equal(res.counts.entriesLoaded, formats.length);
+      assert.equal(res.counts.skippedUnknownPhone, 0);
+      assert.equal(res.state.customers[0].phone, '9000000001');
+      assert.equal(getCustomerBalance(res.state.entries, '9000000001'), formats.length * 100);
+    }
+  });
+
+  it('accepts uppercase/padded types ("CREDIT", " Payment ") and skips unknown types', () => {
+    const res = importLedger({
+      shop: 'Type Shop',
+      customers: [{ name: 'Asha', phone: '9000000001' }],
+      entries: [
+        { phone: '9000000001', type: 'CREDIT', amount: 500, date: '2026-11-10', note: 'goods' },
+        { phone: '9000000001', type: ' Payment ', amount: 200, date: '2026-11-11', note: 'upi' },
+        { phone: '9000000001', type: 'refund', amount: 100, date: '2026-11-12', note: 'bad' },
+      ],
+    });
+    assert.equal(res.ok, true);
+    assert.equal(res.counts.entriesLoaded, 2);
+    assert.equal(res.counts.skippedInvalidEntries, 1);
+    assert.equal(getCustomerBalance(res.state.entries, '9000000001'), 300);
+  });
+
+  it('accepts 250.00 / "250.00" / "250.0" as 250 and skips 99.5, 0, -5, and "abc"', () => {
+    const res = importLedger(
+      '{"shop":"Amount Shop","customers":[{"name":"Asha","phone":"9000000001"}],"entries":[' +
+        '{"phone":"9000000001","type":"credit","amount":250.00,"date":"2026-11-10","note":"num"},' +
+        '{"phone":"9000000001","type":"credit","amount":"250.00","date":"2026-11-10","note":"str2"},' +
+        '{"phone":"9000000001","type":"credit","amount":" 250.0 ","date":"2026-11-10","note":"str1"},' +
+        '{"phone":"9000000001","type":"credit","amount":99.5,"date":"2026-11-10","note":"frac"},' +
+        '{"phone":"9000000001","type":"credit","amount":"99.5","date":"2026-11-10","note":"fracstr"},' +
+        '{"phone":"9000000001","type":"credit","amount":0,"date":"2026-11-10","note":"zero"},' +
+        '{"phone":"9000000001","type":"credit","amount":-5,"date":"2026-11-10","note":"neg"},' +
+        '{"phone":"9000000001","type":"credit","amount":"abc","date":"2026-11-10","note":"nan"}' +
+        ']}'
+    );
+    assert.equal(res.ok, true);
+    assert.equal(res.counts.customersLoaded, 1);
+    assert.equal(res.counts.entriesLoaded, 3);
+    assert.equal(res.counts.skippedInvalidEntries, 5);
+    assert.equal(getCustomerBalance(res.state.entries, '9000000001'), 750);
+    assert.equal(
+      formatImportSummary(res.counts),
+      'Loaded 1 customer and 3 entries. Skipped 5 invalid entries.'
+    );
+  });
+
+  it('keeps manual Add Customer phone validation strict (9-digit and +91 still refused)', () => {
+    const empty = createEmptyState('Manual Shop');
+    assert.equal(addCustomer(empty, { name: 'Short', phone: '900000001' }).ok, false);
+    assert.equal(addCustomer(empty, { name: 'Prefixed', phone: '+91 90000 00001' }).ok, false);
+  });
+});
