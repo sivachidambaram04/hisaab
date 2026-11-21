@@ -759,6 +759,129 @@ export function getLabels(lang = 'en') {
   return LABELS[lang] || LABELS.en;
 }
 
+const OCR_MIN_AMOUNT = 1;
+const OCR_MAX_AMOUNT = 500000;
+const PAYMENT_KEYWORD_RE =
+  /\b(?:paid|sent|received|amount|payment|successful|debited|credited|total)\b/i;
+
+function maskWithSpaces(text, regex) {
+  return text.replace(regex, (match) => ' '.repeat(match.length));
+}
+
+function parsePlausibleRupees(rawNumber) {
+  const cleaned = rawNumber.replace(/,/g, '');
+  const num = Number(cleaned);
+  if (!Number.isFinite(num)) return null;
+  const rounded = Math.round(num);
+  if (rounded < OCR_MIN_AMOUNT || rounded > OCR_MAX_AMOUNT) return null;
+  return rounded;
+}
+
+export function extractAmount(text) {
+  if (typeof text !== 'string' || !text.trim()) {
+    return null;
+  }
+
+  let cleaned = text.replace(/\r\n?/g, '\n');
+
+  // 1. Mask alphanumeric transaction / reference IDs (e.g. T2610251234567890)
+  cleaned = maskWithSpaces(cleaned, /\b[A-Za-z]+\d{6,}[A-Za-z0-9]*\b/g);
+  cleaned = maskWithSpaces(cleaned, /\b\d{6,}[A-Za-z]+[A-Za-z0-9]*\b/g);
+
+  // 2. Mask 10-digit phone numbers (with optional +91/91) and 11+ digit UPI/UTR reference numbers
+  cleaned = maskWithSpaces(cleaned, /(?:\+?91[\s-]?)?\b\d{10,}\b/g);
+  cleaned = maskWithSpaces(cleaned, /\b[6-9]\d{4}[\s-]\d{5}\b/g);
+
+  // 3. Mask dates (numeric and month-name) and times
+  cleaned = maskWithSpaces(
+    cleaned,
+    /\b(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{2,4})\b/g
+  );
+  cleaned = maskWithSpaces(
+    cleaned,
+    /\b\d{1,2}(?:st|nd|rd|th)?\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:[,\s]+\d{2,4})?\b/gi
+  );
+  cleaned = maskWithSpaces(
+    cleaned,
+    /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?(?:[,\s]+\d{2,4})?\b/gi
+  );
+  cleaned = maskWithSpaces(cleaned, /\b\d{1,2}:\d{2}(?::\d{2})?(?:\s*(?:a\.?m\.?|p\.?m\.?))?\b/gi);
+
+  const hasNearbyKeyword = (index, length) => {
+    const start = Math.max(0, index - 45);
+    const end = Math.min(cleaned.length, index + length + 45);
+    return PAYMENT_KEYWORD_RE.test(cleaned.slice(start, end));
+  };
+
+  // Tier 1: Explicit currency marker (Rs, Rs., INR, ₹) before or after the number
+  const currencyCandidates = [];
+  const currencyRegexes = [
+    /(?:₹|\bRs\.?|\bINR)\s*([0-9]{1,3}(?:,[0-9]{2,3})*(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)(?![\d.,])/gi,
+    /(?<![\d.])([0-9]{1,3}(?:,[0-9]{2,3})*(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)\s*(?:₹|Rs\.?|INR)\b/gi,
+  ];
+
+  for (const re of currencyRegexes) {
+    for (const match of cleaned.matchAll(re)) {
+      const amount = parsePlausibleRupees(match[1]);
+      if (amount !== null) {
+        currencyCandidates.push({
+          amount,
+          nearKeyword: hasNearbyKeyword(match.index, match[0].length),
+        });
+      }
+    }
+  }
+
+  if (currencyCandidates.length > 0) {
+    const withKeyword = currencyCandidates.filter((c) => c.nearKeyword);
+    const pool = withKeyword.length > 0 ? withKeyword : currencyCandidates;
+    return pool.reduce((best, c) => (c.amount > best.amount ? c : best), pool[0]).amount;
+  }
+
+  // Tier 2 (near payment keywords) & Tier 3 (largest plausible fallback)
+  const keywordCandidates = [];
+  const fallbackCandidates = [];
+  const numberRe = /(?<![\d.])([0-9]{1,3}(?:,[0-9]{2,3})*(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)(?![\d.])/g;
+
+  for (const match of cleaned.matchAll(numberRe)) {
+    const raw = match[1];
+    const hasGroupingOrDecimal = /[,.]/.test(raw);
+    const prevChar = match.index > 0 ? cleaned[match.index - 1] : '';
+    const nextChar = cleaned[match.index + raw.length] || '';
+
+    // For plain ungrouped integers, skip digits attached directly to letters (e.g. UPI2)
+    if (!hasGroupingOrDecimal && (/[A-Za-z]/.test(prevChar) || /[A-Za-z]/.test(nextChar))) {
+      continue;
+    }
+    if (/[A-Za-z]/.test(nextChar)) {
+      continue;
+    }
+
+    const amount = parsePlausibleRupees(raw);
+    if (amount === null) continue;
+
+    // Ignore standalone bare years (1900-2099) without commas or decimals
+    if (!hasGroupingOrDecimal && amount >= 1900 && amount <= 2099) {
+      continue;
+    }
+
+    if (hasNearbyKeyword(match.index, raw.length)) {
+      keywordCandidates.push(amount);
+    } else {
+      fallbackCandidates.push(amount);
+    }
+  }
+
+  if (keywordCandidates.length > 0) {
+    return Math.max(...keywordCandidates);
+  }
+  if (fallbackCandidates.length > 0) {
+    return Math.max(...fallbackCandidates);
+  }
+  return null;
+}
+
+
 
 
 

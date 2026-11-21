@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Hisaab — Shop Ledger</title>
-    <link rel="stylesheet" href="styles.css?v=2" />
+    <link rel="stylesheet" href="styles.css?v=3" />
   </head>
   <body>
     <main class="app">
@@ -255,6 +255,7 @@
                 Payment screenshot (optional)
               </label>
               <input id="shot-input" name="shot" type="file" accept="image/*" />
+              <p id="shot-ocr-status" class="shot-ocr-status" role="status" hidden></p>
             </div>
 
             <p id="entry-error" class="form-error" role="alert" hidden></p>
@@ -280,6 +281,6 @@
       </section>
     </main>
 
-    <script type="module" src="app.js?v=2"></script>
+    <script type="module" src="app.js?v=3"></script>
   </body>
 </html>

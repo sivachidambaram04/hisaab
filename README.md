@@ -8,6 +8,7 @@ Hisaab is a lightweight digital credit ledger (khata) for a kirana shop, built w
 - Balances per customer and shop **Total Outstanding** are always calculated live from entries, never stored.
 - Customer pages list entries newest first.
 - Attach payment screenshots (compressed to max 480 px wide JPEG before saving, with graceful fallback if browser storage is full).
+- Automatically reads the rupee amount from a payment screenshot using Tesseract.js when a file is chosen (needs internet on first use to download the OCR script and English model; never blocks saving).
 - One-tap WhatsApp reminder links (`https://wa.me/91<phone>?text=...`) carrying the shop name, customer name, and Indian-formatted balance.
 - Replace-only JSON import with unknown-phone skipping and load counts, plus CSV export.
 - Customer search by name or phone, inline edit/delete for entries, overdue list sorted by days since last payment, optional shop UPI ID embedded as a `upi://pay` link in WhatsApp reminders, and English / Hindi / Telugu label selector.

@@ -22,10 +22,14 @@ import {
   validateUpiId,
   buildUpiPayUrl,
   getLabels,
-} from './logic.js?v=2';
+  extractAmount,
+} from './logic.js?v=3';
 
 const MAX_SHOT_WIDTH = 480;
 const SHOT_JPEG_QUALITY = 0.72;
+const OCR_TARGET_WIDTH = 1200;
+const OCR_CONTRAST_FACTOR = 1.6;
+const TESSERACT_CDN_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
 
 const el = {
   langSelect: document.getElementById('lang-select'),
@@ -69,6 +73,7 @@ const el = {
   entryNoteInput: document.getElementById('entry-note'),
   shotField: document.getElementById('shot-field'),
   shotInput: document.getElementById('shot-input'),
+  shotOcrStatus: document.getElementById('shot-ocr-status'),
   entryError: document.getElementById('entry-error'),
   entryStatus: document.getElementById('entry-status'),
   entrySubmitBtn: document.getElementById('entry-submit-btn'),
@@ -82,6 +87,8 @@ let selectedPhone = null;
 let editingEntryId = null;
 let confirmingDeleteId = null;
 let activeTab = 'all';
+let ocrRunId = 0;
+let tesseractLoadPromise = null;
 
 function getTodayString() {
   return resolveToday(window.location.search);
@@ -204,6 +211,132 @@ function compressScreenshot(file) {
   });
 }
 
+function loadTesseract() {
+  if (window.Tesseract && typeof window.Tesseract.recognize === 'function') {
+    return Promise.resolve(window.Tesseract);
+  }
+  if (tesseractLoadPromise) {
+    return tesseractLoadPromise;
+  }
+  tesseractLoadPromise = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = TESSERACT_CDN_URL;
+    script.async = true;
+    script.onload = () => {
+      if (window.Tesseract && typeof window.Tesseract.recognize === 'function') {
+        resolve(window.Tesseract);
+      } else {
+        tesseractLoadPromise = null;
+        reject(new Error('Tesseract.js failed to initialize.'));
+      }
+    };
+    script.onerror = () => {
+      tesseractLoadPromise = null;
+      script.remove();
+      reject(new Error('Could not load Tesseract.js from CDN.'));
+    };
+    document.head.append(script);
+  });
+  return tesseractLoadPromise;
+}
+
+function prepareOcrCanvas(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Could not read image file for OCR.'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('Invalid image for OCR.'));
+      img.onload = () => {
+        const origW = img.naturalWidth || img.width;
+        const origH = img.naturalHeight || img.height;
+        if (!origW || !origH) {
+          reject(new Error('Image has invalid dimensions.'));
+          return;
+        }
+        const scale = OCR_TARGET_WIDTH / origW;
+        const targetW = Math.max(1, Math.round(origW * scale));
+        const targetH = Math.max(1, Math.round(origH * scale));
+
+        const canvas = document.createElement('canvas');
+        canvas.width = targetW;
+        canvas.height = targetH;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          reject(new Error('Could not prepare OCR canvas.'));
+          return;
+        }
+
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, targetW, targetH);
+        ctx.drawImage(img, 0, 0, targetW, targetH);
+
+        const imageData = ctx.getImageData(0, 0, targetW, targetH);
+        const data = imageData.data;
+        for (let i = 0; i < data.length; i += 4) {
+          const gray = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+          const contrasted = Math.max(
+            0,
+            Math.min(255, Math.round((gray - 128) * OCR_CONTRAST_FACTOR + 128))
+          );
+          data[i] = contrasted;
+          data[i + 1] = contrasted;
+          data[i + 2] = contrasted;
+        }
+        ctx.putImageData(imageData, 0, 0);
+        resolve(canvas);
+      };
+      img.src = String(reader.result || '');
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function resetShotOcr() {
+  ocrRunId += 1;
+  showMessage(el.shotOcrStatus, '');
+}
+
+async function readAmountFromScreenshot(file) {
+  if (getSelectedEntryType() !== 'payment' || !file) {
+    resetShotOcr();
+    return;
+  }
+
+  ocrRunId += 1;
+  const runId = ocrRunId;
+  showMessage(el.shotOcrStatus, 'Reading amount from screenshot...');
+
+  try {
+    const [Tesseract, canvas] = await Promise.all([loadTesseract(), prepareOcrCanvas(file)]);
+    if (runId !== ocrRunId || getSelectedEntryType() !== 'payment' || !selectedPhone) {
+      return;
+    }
+
+    const result = await Tesseract.recognize(canvas, 'eng');
+    if (runId !== ocrRunId || getSelectedEntryType() !== 'payment' || !selectedPhone) {
+      return;
+    }
+
+    const recognizedText =
+      result && result.data && typeof result.data.text === 'string' ? result.data.text : '';
+    const amount = extractAmount(recognizedText);
+
+    if (amount !== null) {
+      showMessage(el.shotOcrStatus, `Read amount: ${formatRupees(amount)}. Please check it.`);
+      if (!el.entryAmountInput.value.trim()) {
+        el.entryAmountInput.value = String(amount);
+      }
+    } else {
+      showMessage(el.shotOcrStatus, 'Could not read an amount. Enter it yourself.');
+    }
+  } catch {
+    if (runId === ocrRunId && getSelectedEntryType() === 'payment' && selectedPhone) {
+      showMessage(el.shotOcrStatus, 'Could not read an amount. Enter it yourself.');
+    }
+  }
+}
+
 function getSelectedEntryType() {
   const checked = el.addEntryForm.querySelector('input[name="type"]:checked');
   return checked ? checked.value : 'credit';
@@ -217,6 +350,7 @@ function syncEntryTypeControls() {
   el.shotField.hidden = !isPayment;
   if (!isPayment) {
     el.shotInput.value = '';
+    resetShotOcr();
   }
 }
 
@@ -232,6 +366,7 @@ function openCustomer(phone) {
   el.entryAmountInput.value = '';
   el.entryNoteInput.value = '';
   el.shotInput.value = '';
+  resetShotOcr();
   syncEntryTypeControls();
   render();
   window.scrollTo({ top: 0, behavior: 'instant' });
@@ -241,6 +376,7 @@ function closeCustomer() {
   selectedPhone = null;
   editingEntryId = null;
   confirmingDeleteId = null;
+  resetShotOcr();
   showMessage(el.customerError, '');
   render();
   window.scrollTo({ top: 0, behavior: 'instant' });
@@ -715,6 +851,19 @@ el.addEntryForm.addEventListener('change', (event) => {
   }
 });
 
+el.shotInput.addEventListener('change', () => {
+  if (getSelectedEntryType() !== 'payment') {
+    resetShotOcr();
+    return;
+  }
+  const file = el.shotInput.files && el.shotInput.files[0];
+  if (!file) {
+    resetShotOcr();
+    return;
+  }
+  readAmountFromScreenshot(file);
+});
+
 el.addEntryForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   if (!selectedPhone) return;
@@ -768,6 +917,7 @@ el.addEntryForm.addEventListener('submit', async (event) => {
     return;
   }
 
+  resetShotOcr();
   el.entryAmountInput.value = '';
   el.entryNoteInput.value = '';
   el.shotInput.value = '';

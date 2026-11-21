@@ -31,6 +31,7 @@ import {
   buildUpiPayUrl,
   LABELS,
   getLabels,
+  extractAmount,
 } from '../logic.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -523,5 +524,41 @@ describe('Bonus 6: Hindi and Telugu labels (English default)', () => {
 
     const bad = deserializeState(JSON.stringify({ ...state, lang: 'fr' }));
     assert.equal(bad.state.lang, 'en');
+  });
+});
+
+describe('Screenshot OCR amount extraction (extractAmount)', () => {
+  it('reads UPI success screen with ₹, commas, and 12-digit UPI Ref', () => {
+    assert.equal(
+      extractAmount('Paid to Ravi Kumar ₹1,500 Payment successful UPI Ref 412345678901'),
+      1500
+    );
+  });
+
+  it('reads Rs. with decimals and rounds to whole rupees', () => {
+    assert.equal(extractAmount('Rs. 670.00 sent'), 670);
+    assert.equal(extractAmount('INR 2810'), 2810);
+    assert.equal(extractAmount('Paid Rs 1,249.60'), 1250);
+  });
+
+  it('returns null when only phone number, date, time, and year are present', () => {
+    assert.equal(extractAmount('Ravi Kumar 9000000101 on 25 Oct 2026 at 14:32'), null);
+    assert.equal(extractAmount('Call +91 9000000101 · 2026-10-25 09:45 AM'), null);
+  });
+
+  it('reads amount while ignoring alphanumeric Transaction ID', () => {
+    assert.equal(extractAmount('Amount ₹250 Transaction ID T2610251234567890'), 250);
+  });
+
+  it('returns null for empty or non-numeric text and respects 1..500000 range', () => {
+    assert.equal(extractAmount(''), null);
+    assert.equal(extractAmount('   '), null);
+    assert.equal(extractAmount('Paid 500001'), null);
+    assert.equal(extractAmount('Paid 0'), null);
+  });
+
+  it('prefers numbers near payment keywords and falls back to largest plausible number', () => {
+    assert.equal(extractAmount('Store 12 · Payment successful 1,500 · Ref 998877665544'), 1500);
+    assert.equal(extractAmount('Item 50\nSubtotal 420'), 420);
   });
 });
