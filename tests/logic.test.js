@@ -31,7 +31,9 @@ import {
   buildUpiPayUrl,
   LABELS,
   getLabels,
-  extractAmount,
+  pickAmount,
+  cutLeadingSymbolAmount,
+  parseCroppedAmount,
 } from '../logic.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -527,38 +529,106 @@ describe('Bonus 6: Hindi and Telugu labels (English default)', () => {
   });
 });
 
-describe('Screenshot OCR amount extraction (extractAmount)', () => {
-  it('reads UPI success screen with ₹, commas, and 12-digit UPI Ref', () => {
-    assert.equal(
-      extractAmount('Paid to Ravi Kumar ₹1,500 Payment successful UPI Ref 412345678901'),
-      1500
-    );
+describe('Screenshot OCR amount picking (pickAmount)', () => {
+  const mkWord = (text, y0, height, x0 = 20, x1 = 160, pass = 'orig') => ({
+    text,
+    bbox: { x0, y0, x1, y1: y0 + height },
+    pass,
   });
 
-  it('reads Rs. with decimals and rounds to whole rupees', () => {
-    assert.equal(extractAmount('Rs. 670.00 sent'), 670);
-    assert.equal(extractAmount('INR 2810'), 2810);
-    assert.equal(extractAmount('Paid Rs 1,249.60'), 1250);
+  it('picks tall headline "269500.00", flags first symbol cut, and helper returns 69500', () => {
+    const words = [
+      mkWord('Transaction', 20, 22),
+      mkWord('Details', 20, 22),
+      mkWord('269500.00', 70, 56, 20, 280),
+      mkWord('From', 160, 20),
+      mkWord('Sivachidambaram', 195, 22),
+      mkWord('Savings', 225, 20),
+      mkWord('Account', 225, 20),
+      mkWord('XXXXXXX5546', 255, 20),
+      mkWord('To', 160, 20),
+      mkWord('Freedom', 195, 22),
+      mkWord('XXXXXXX9096', 255, 20),
+      mkWord('Successful', 360, 20),
+    ];
+
+    const picked = pickAmount(words);
+    assert.ok(picked);
+    assert.equal(picked.text, '269500.00');
+    assert.equal(picked.isHeadline, true);
+    assert.equal(picked.needsFirstSymbolCut, true);
+    assert.equal(cutLeadingSymbolAmount(picked.text), 69500);
+    assert.equal(parseCroppedAmount('69500.00'), 69500);
   });
 
-  it('returns null when only phone number, date, time, and year are present', () => {
-    assert.equal(extractAmount('Ravi Kumar 9000000101 on 25 Oct 2026 at 14:32'), null);
-    assert.equal(extractAmount('Call +91 9000000101 · 2026-10-25 09:45 AM'), null);
+  it('rejects stray digits "0", "1" and masked accounts XXXXXXX5546 / XXXXXXX9096 when no headline amount is recognised', () => {
+    const words = [
+      mkWord('Transaction', 20, 22),
+      mkWord('Details', 20, 22),
+      mkWord('From', 160, 20),
+      mkWord('1', 180, 18),
+      mkWord('0', 185, 18),
+      mkWord('Sivachidambaram', 195, 22),
+      mkWord('A/C', 255, 20),
+      mkWord('No.-', 255, 20),
+      mkWord('XXXXXXX5546', 255, 20),
+      mkWord('To', 160, 20),
+      mkWord('XXXXXXX9096', 255, 20),
+      mkWord('Transaction', 360, 20),
+      mkWord('Status:', 360, 20),
+      mkWord('Successful', 360, 20),
+    ];
+
+    assert.equal(pickAmount(words), null);
   });
 
-  it('reads amount while ignoring alphanumeric Transaction ID', () => {
-    assert.equal(extractAmount('Amount ₹250 Transaction ID T2610251234567890'), 250);
+  it('reads "Paid ₹1,500 Payment successful UPI Ref 412345678901" as 1500', () => {
+    const picked = pickAmount('Paid ₹1,500 Payment successful UPI Ref 412345678901');
+    assert.ok(picked);
+    assert.equal(picked.amount, 1500);
   });
 
-  it('returns null for empty or non-numeric text and respects 1..500000 range', () => {
-    assert.equal(extractAmount(''), null);
-    assert.equal(extractAmount('   '), null);
-    assert.equal(extractAmount('Paid 500001'), null);
-    assert.equal(extractAmount('Paid 0'), null);
+  it('reads "Rs. 670.00 sent" as 670', () => {
+    const picked = pickAmount('Rs. 670.00 sent');
+    assert.ok(picked);
+    assert.equal(picked.amount, 670);
   });
 
-  it('prefers numbers near payment keywords and falls back to largest plausible number', () => {
-    assert.equal(extractAmount('Store 12 · Payment successful 1,500 · Ref 998877665544'), 1500);
-    assert.equal(extractAmount('Item 50\nSubtotal 420'), 420);
+  it('returns null when only a phone number, a date, and times are present', () => {
+    assert.equal(pickAmount('Ravi Kumar 9000000101 on 25 Oct 2026 at 14:32'), null);
+    assert.equal(pickAmount('Call +91 9000000101 2026-10-25 09:45 AM'), null);
+    assert.equal(pickAmount(''), null);
+  });
+
+  it('reads 250 next to the word Amount and rejects values over 500000', () => {
+    const words = [
+      mkWord('Amount', 100, 22, 20, 100),
+      mkWord('250', 100, 22, 110, 160),
+      mkWord('Transaction', 150, 20),
+      mkWord('ID', 150, 20),
+      mkWord('T2610251234567890', 150, 20),
+    ];
+    const picked = pickAmount(words);
+    assert.ok(picked);
+    assert.equal(picked.amount, 250);
+
+    assert.equal(pickAmount('Paid 500001'), null);
+  });
+
+  it('handles rupee glyph misreads as 3, $, or X on tall headline amounts', () => {
+    for (const token of ['369500.00', '$69500.00', 'X69500.00']) {
+      const words = [
+        mkWord('Transaction', 20, 20),
+        mkWord('Details', 20, 20),
+        mkWord(token, 70, 50, 20, 260),
+        mkWord('XXXXXXX5546', 255, 18),
+        mkWord('Successful', 360, 18),
+      ];
+      const picked = pickAmount(words);
+      assert.ok(picked, `expected match for ${token}`);
+      assert.equal(picked.text, token);
+      assert.equal(picked.needsFirstSymbolCut, true);
+      assert.equal(cutLeadingSymbolAmount(picked.text), 69500);
+    }
   });
 });

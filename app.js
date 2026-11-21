@@ -22,8 +22,9 @@ import {
   validateUpiId,
   buildUpiPayUrl,
   getLabels,
-  extractAmount,
-} from './logic.js?v=3';
+  pickAmount,
+  parseCroppedAmount,
+} from './logic.js?v=4';
 
 const MAX_SHOT_WIDTH = 480;
 const SHOT_JPEG_QUALITY = 0.72;
@@ -240,7 +241,7 @@ function loadTesseract() {
   return tesseractLoadPromise;
 }
 
-function prepareOcrCanvas(file) {
+function loadImageFromFile(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(new Error('Could not read image file for OCR.'));
@@ -254,42 +255,137 @@ function prepareOcrCanvas(file) {
           reject(new Error('Image has invalid dimensions.'));
           return;
         }
-        const scale = OCR_TARGET_WIDTH / origW;
-        const targetW = Math.max(1, Math.round(origW * scale));
-        const targetH = Math.max(1, Math.round(origH * scale));
-
-        const canvas = document.createElement('canvas');
-        canvas.width = targetW;
-        canvas.height = targetH;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          reject(new Error('Could not prepare OCR canvas.'));
-          return;
-        }
-
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, targetW, targetH);
-        ctx.drawImage(img, 0, 0, targetW, targetH);
-
-        const imageData = ctx.getImageData(0, 0, targetW, targetH);
-        const data = imageData.data;
-        for (let i = 0; i < data.length; i += 4) {
-          const gray = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-          const contrasted = Math.max(
-            0,
-            Math.min(255, Math.round((gray - 128) * OCR_CONTRAST_FACTOR + 128))
-          );
-          data[i] = contrasted;
-          data[i + 1] = contrasted;
-          data[i + 2] = contrasted;
-        }
-        ctx.putImageData(imageData, 0, 0);
-        resolve(canvas);
+        resolve(img);
       };
       img.src = String(reader.result || '');
     };
     reader.readAsDataURL(file);
   });
+}
+
+function drawOriginalCanvas(img) {
+  const origW = img.naturalWidth || img.width;
+  const origH = img.naturalHeight || img.height;
+  const canvas = document.createElement('canvas');
+  canvas.width = origW;
+  canvas.height = origH;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Could not prepare original OCR canvas.');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, origW, origH);
+  ctx.drawImage(img, 0, 0, origW, origH);
+  return canvas;
+}
+
+function applyGrayscaleContrast(ctx, width, height, contrastFactor = OCR_CONTRAST_FACTOR) {
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const data = imageData.data;
+  for (let i = 0; i < data.length; i += 4) {
+    const gray = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    const contrasted = Math.max(
+      0,
+      Math.min(255, Math.round((gray - 128) * contrastFactor + 128))
+    );
+    data[i] = contrasted;
+    data[i + 1] = contrasted;
+    data[i + 2] = contrasted;
+  }
+  ctx.putImageData(imageData, 0, 0);
+}
+
+function drawEnhancedOcrCanvas(img) {
+  const origW = img.naturalWidth || img.width;
+  const origH = img.naturalHeight || img.height;
+  const scale = OCR_TARGET_WIDTH / origW;
+  const targetW = Math.max(1, Math.round(origW * scale));
+  const targetH = Math.max(1, Math.round(origH * scale));
+
+  const canvas = document.createElement('canvas');
+  canvas.width = targetW;
+  canvas.height = targetH;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Could not prepare enhanced OCR canvas.');
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, targetW, targetH);
+  ctx.drawImage(img, 0, 0, targetW, targetH);
+  applyGrayscaleContrast(ctx, targetW, targetH);
+  return canvas;
+}
+
+function buildCroppedDigitsCanvas(srcCanvas, word, tokenText) {
+  const bbox = word && word.bbox;
+  if (!bbox) return null;
+
+  let cutX = null;
+  if (Array.isArray(word.symbols) && word.symbols.length >= 2 && word.symbols[0]?.bbox) {
+    const symX1 = Number(word.symbols[0].bbox.x1);
+    if (Number.isFinite(symX1) && symX1 > bbox.x0 && symX1 < bbox.x1) {
+      cutX = symX1;
+    }
+  }
+  if (cutX === null) {
+    const charCount = Math.max(2, String(tokenText || word.text || '').length);
+    cutX = bbox.x0 + (bbox.x1 - bbox.x0) / charCount;
+  }
+
+  const wordH = Math.max(1, bbox.y1 - bbox.y0);
+  const padX = Math.max(2, Math.round(wordH * 0.15));
+  const padY = Math.max(2, Math.round(wordH * 0.2));
+
+  const sx = Math.max(0, Math.floor(cutX));
+  const sy = Math.max(0, Math.floor(bbox.y0 - padY));
+  const sx1 = Math.min(srcCanvas.width, Math.ceil(bbox.x1 + padX));
+  const sy1 = Math.min(srcCanvas.height, Math.ceil(bbox.y1 + padY));
+  const sw = sx1 - sx;
+  const sh = sy1 - sy;
+  if (sw < 4 || sh < 4) return null;
+
+  const scale = 3;
+  const margin = 16;
+  const cw = sw * scale + margin * 2;
+  const ch = sh * scale + margin * 2;
+
+  const crop = document.createElement('canvas');
+  crop.width = cw;
+  crop.height = ch;
+  const ctx = crop.getContext('2d');
+  if (!ctx) return null;
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, cw, ch);
+  ctx.drawImage(srcCanvas, sx, sy, sw, sh, margin, margin, sw * scale, sh * scale);
+  applyGrayscaleContrast(ctx, cw, ch);
+  return crop;
+}
+
+function extractWordsFromResult(result, passName) {
+  const data = result && result.data;
+  if (!data) return [];
+
+  let rawWords = [];
+  if (Array.isArray(data.words) && data.words.length > 0) {
+    rawWords = data.words;
+  } else if (Array.isArray(data.blocks)) {
+    for (const block of data.blocks) {
+      for (const para of block.paragraphs || []) {
+        for (const line of para.lines || []) {
+          for (const w of line.words || []) {
+            rawWords.push(w);
+          }
+        }
+      }
+    }
+  }
+
+  return rawWords
+    .filter((w) => w && typeof w.text === 'string' && w.text.trim())
+    .map((w) => ({
+      text: w.text,
+      bbox: w.bbox || null,
+      symbols: Array.isArray(w.symbols) ? w.symbols : [],
+      pass: passName,
+    }));
 }
 
 function resetShotOcr() {
@@ -307,25 +403,77 @@ async function readAmountFromScreenshot(file) {
   const runId = ocrRunId;
   showMessage(el.shotOcrStatus, 'Reading amount from screenshot...');
 
+  let worker = null;
   try {
-    const [Tesseract, canvas] = await Promise.all([loadTesseract(), prepareOcrCanvas(file)]);
+    const [Tesseract, img] = await Promise.all([loadTesseract(), loadImageFromFile(file)]);
     if (runId !== ocrRunId || getSelectedEntryType() !== 'payment' || !selectedPhone) {
       return;
     }
 
-    const result = await Tesseract.recognize(canvas, 'eng');
+    const origCanvas = drawOriginalCanvas(img);
+    const enhancedCanvas = drawEnhancedOcrCanvas(img);
+
+    worker = await Tesseract.createWorker('eng');
     if (runId !== ocrRunId || getSelectedEntryType() !== 'payment' || !selectedPhone) {
       return;
     }
 
-    const recognizedText =
-      result && result.data && typeof result.data.text === 'string' ? result.data.text : '';
-    const amount = extractAmount(recognizedText);
+    await worker.setParameters({ tessedit_pageseg_mode: '11' });
 
-    if (amount !== null) {
-      showMessage(el.shotOcrStatus, `Read amount: ${formatRupees(amount)}. Please check it.`);
+    const pass1 = await worker.recognize(origCanvas, {}, { blocks: true });
+    if (runId !== ocrRunId || getSelectedEntryType() !== 'payment' || !selectedPhone) {
+      return;
+    }
+
+    const pass2 = await worker.recognize(enhancedCanvas, {}, { blocks: true });
+    if (runId !== ocrRunId || getSelectedEntryType() !== 'payment' || !selectedPhone) {
+      return;
+    }
+
+    const mergedWords = [
+      ...extractWordsFromResult(pass1, 'orig'),
+      ...extractWordsFromResult(pass2, 'enhanced'),
+    ];
+
+    let picked = mergedWords.length > 0 ? pickAmount(mergedWords) : null;
+    if (!picked) {
+      const combinedText = `${pass1?.data?.text || ''}\n${pass2?.data?.text || ''}`;
+      picked = pickAmount(combinedText);
+    }
+
+    let finalAmount = picked ? picked.amount : null;
+
+    if (picked && picked.needsFirstSymbolCut && picked.word && picked.word.bbox) {
+      const srcCanvas = picked.word.pass === 'enhanced' ? enhancedCanvas : origCanvas;
+      const cropCanvas = buildCroppedDigitsCanvas(srcCanvas, picked.word, picked.text);
+      if (cropCanvas) {
+        try {
+          await worker.setParameters({
+            tessedit_pageseg_mode: '7',
+            tessedit_char_whitelist: '0123456789.,',
+          });
+          const cropRes = await worker.recognize(cropCanvas);
+          if (runId !== ocrRunId || getSelectedEntryType() !== 'payment' || !selectedPhone) {
+            return;
+          }
+          const croppedAmount = parseCroppedAmount(cropRes?.data?.text || '');
+          if (croppedAmount !== null) {
+            finalAmount = croppedAmount;
+          }
+        } catch {
+          // Keep original picked.amount if the cropped re-read fails.
+        }
+      }
+    }
+
+    if (runId !== ocrRunId || getSelectedEntryType() !== 'payment' || !selectedPhone) {
+      return;
+    }
+
+    if (finalAmount !== null) {
+      showMessage(el.shotOcrStatus, `Read amount: ${formatRupees(finalAmount)}. Please check it.`);
       if (!el.entryAmountInput.value.trim()) {
-        el.entryAmountInput.value = String(amount);
+        el.entryAmountInput.value = String(finalAmount);
       }
     } else {
       showMessage(el.shotOcrStatus, 'Could not read an amount. Enter it yourself.');
@@ -333,6 +481,10 @@ async function readAmountFromScreenshot(file) {
   } catch {
     if (runId === ocrRunId && getSelectedEntryType() === 'payment' && selectedPhone) {
       showMessage(el.shotOcrStatus, 'Could not read an amount. Enter it yourself.');
+    }
+  } finally {
+    if (worker) {
+      await worker.terminate().catch(() => {});
     }
   }
 }
